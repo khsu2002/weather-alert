@@ -10,13 +10,12 @@ from datetime import date, timedelta
 
 # 你的地點（緯度、經度）
 # 台北市預設值，其他城市可自行更換
-LATITUDE  = 25.08121603732156
-LONGITUDE = 121.51024315659812
-LOCATION_NAME = "牛媽媽快餐店"
+LATITUDE  = 25.0330
+LONGITUDE = 121.5654
+LOCATION_NAME = "台北"
 
 # 觸發提醒的條件
 TEMP_DIFF_THRESHOLD = 5    # 溫差超過幾度就提醒（°C）
-RAIN_THRESHOLD_MM   = 5    # 降雨量超過幾毫米就提醒
 
 # Discord Webhook URL（從 GitHub Secrets 讀取，不需要修改這行）
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -51,42 +50,55 @@ WEATHER_DESCRIPTIONS = {
     99: "強烈雷陣雨伴冰雹",
 }
 
-SEVERE_WEATHER_CODES = {45, 48, 65, 75, 82, 86, 95, 96, 99}
-RAIN_WEATHER_CODES   = {51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99}
+# 小雨以上才算需要撐傘（排除毛毛雨 51/53/55）
+UMBRELLA_WEATHER_CODES = {61, 63, 65, 71, 73, 75, 80, 81, 82, 85, 86, 95, 96, 99}
+SEVERE_WEATHER_CODES   = {82, 86, 95, 96, 99}
 
 
 def fetch_weather():
-    """向 Open-Meteo API 取得昨天與今天的天氣資料"""
+    """取得昨天每日資料（溫差比較）和今天逐小時資料（判斷是否會下雨）"""
     today     = date.today()
     yesterday = today - timedelta(days=1)
 
-    url = (
+    # 每日資料：昨天和今天的最高/最低溫、天氣代碼
+    daily_url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={LATITUDE}&longitude={LONGITUDE}"
-        f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode"
+        f"&daily=temperature_2m_max,temperature_2m_min,weathercode"
         f"&timezone=Asia%2FTaipei"
         f"&start_date={yesterday}&end_date={today}"
     )
 
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        data = json.loads(resp.read())
+    with urllib.request.urlopen(daily_url, timeout=10) as resp:
+        daily_data = json.loads(resp.read())
 
-    daily = data["daily"]
-    dates = daily["time"]
-
-    result = {}
-    for i, d in enumerate(dates):
-        result[d] = {
+    daily = daily_data["daily"]
+    daily_result = {}
+    for i, d in enumerate(daily["time"]):
+        daily_result[d] = {
             "max_temp":     daily["temperature_2m_max"][i],
             "min_temp":     daily["temperature_2m_min"][i],
-            "rain_mm":      daily["precipitation_sum"][i],
             "weather_code": daily["weathercode"][i],
         }
 
-    return result[str(yesterday)], result[str(today)]
+    # 逐小時資料：今天每小時的天氣代碼
+    hourly_url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={LATITUDE}&longitude={LONGITUDE}"
+        f"&hourly=weathercode"
+        f"&timezone=Asia%2FTaipei"
+        f"&start_date={today}&end_date={today}"
+    )
+
+    with urllib.request.urlopen(hourly_url, timeout=10) as resp:
+        hourly_data = json.loads(resp.read())
+
+    today_hourly_codes = hourly_data["hourly"]["weathercode"]
+
+    return daily_result[str(yesterday)], daily_result[str(today)], today_hourly_codes
 
 
-def build_message(yesterday, today):
+def build_message(yesterday, today, today_hourly_codes):
     """根據天氣資料判斷是否需要提醒，並組成訊息"""
     alerts   = []
     tips     = []
@@ -94,7 +106,6 @@ def build_message(yesterday, today):
 
     y_max, y_min = yesterday["max_temp"], yesterday["min_temp"]
     t_max, t_min = today["max_temp"],     today["min_temp"]
-    t_rain = today["rain_mm"] or 0
     t_code = today["weather_code"]
     y_code = yesterday["weather_code"]
 
@@ -118,15 +129,18 @@ def build_message(yesterday, today):
         warnings.append(f"☀️ 今天最高溫達 {t_max:.0f}°C，高溫注意防曬補水！")
         tips.append("多喝水，避免長時間在戶外曝曬")
 
-    # --- 降雨判斷 ---
-    if t_code in SEVERE_WEATHER_CODES:
-        alerts.append(f"⛈️ 今天天氣劇烈：{t_desc}")
+    # --- 降雨判斷（逐小時，今天任何時段有小雨以上就提醒）---
+    today_rain_codes   = [c for c in today_hourly_codes if c in UMBRELLA_WEATHER_CODES]
+    today_severe_codes = [c for c in today_hourly_codes if c in SEVERE_WEATHER_CODES]
+
+    if today_severe_codes:
+        worst_code = max(today_severe_codes)
+        alerts.append(f"⛈️ 今天有劇烈天氣：{WEATHER_DESCRIPTIONS.get(worst_code, '')}，請多加注意！")
         tips.append("盡量減少外出，外出務必帶傘")
-    elif t_code in RAIN_WEATHER_CODES or t_rain >= RAIN_THRESHOLD_MM:
-        alerts.append(f"🌧️ 今天有降雨（{t_desc}，預計 {t_rain:.0f} mm）")
+    elif today_rain_codes:
+        worst_code = max(today_rain_codes)
+        alerts.append(f"🌧️ 今天某時段會下雨（{WEATHER_DESCRIPTIONS.get(worst_code, '')}）")
         tips.append("記得帶傘！")
-    elif y_code in RAIN_WEATHER_CODES and t_code not in RAIN_WEATHER_CODES:
-        alerts.append(f"🌤️ 昨天有雨，今天放晴（{t_desc}）")
 
     if not alerts and not warnings:
         return None  # 天氣正常，不發通知
@@ -171,11 +185,12 @@ def send_discord(message):
 
 def main():
     print("📡 正在取得天氣資料...")
-    yesterday_data, today_data = fetch_weather()
+    yesterday_data, today_data, today_hourly_codes = fetch_weather()
     print(f"昨天：{yesterday_data}")
     print(f"今天：{today_data}")
+    print(f"今天逐小時天氣代碼：{today_hourly_codes}")
 
-    message = build_message(yesterday_data, today_data)
+    message = build_message(yesterday_data, today_data, today_hourly_codes)
 
     if message is None:
         print("✅ 今天天氣正常，不需要提醒。")
