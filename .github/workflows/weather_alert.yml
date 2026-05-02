@@ -1,0 +1,23 @@
+name: 天氣提醒
+
+on:
+  schedule:
+    # 每天早上 7:00（台灣時間）執行
+    # GitHub Actions 使用 UTC，台灣是 UTC+8，所以設定 UTC 23:00 = 台灣 07:00
+    - cron: '0 23 * * *'
+
+  # 讓你可以手動在 GitHub 網頁上按按鈕測試
+  workflow_dispatch:
+
+jobs:
+  check-weather:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 下載程式碼
+        uses: actions/checkout@v4
+
+      - name: 執行天氣提醒腳本
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python weather_alert.py
