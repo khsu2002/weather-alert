@@ -10,9 +10,9 @@ from datetime import date, timedelta
 
 # 你的地點（緯度、經度）
 # 台北市預設值，其他城市可自行更換
-LATITUDE  = 25.0330
-LONGITUDE = 121.5654
-LOCATION_NAME = "台北"
+LATITUDE  = 25.08121603732156
+LONGITUDE = 121.51024315659812
+LOCATION_NAME = "牛媽媽快餐店"
 
 # 觸發提醒的條件
 TEMP_DIFF_THRESHOLD = 5    # 溫差超過幾度就提醒（°C）
