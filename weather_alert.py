@@ -1,5 +1,6 @@
 import urllib.request
 import urllib.parse
+import urllib.error
 import json
 import os
 from datetime import date, timedelta
@@ -8,59 +9,35 @@ from datetime import date, timedelta
 #  ⚙️  請修改這裡的設定
 # ============================================================
 
-# 你的地點（緯度、經度）
-# 台北市預設值，其他城市可自行更換
-LATITUDE  = 25.08121603732156
-LONGITUDE = 121.51024315659812
-LOCATION_NAME = "牛媽媽快餐店"
+LATITUDE  = 25.0330
+LONGITUDE = 121.5654
+LOCATION_NAME = "台北"
 
-# 觸發提醒的條件
 TEMP_DIFF_THRESHOLD = 5    # 溫差超過幾度就提醒（°C）
 
-# Discord Webhook URL（從 GitHub Secrets 讀取，不需要修改這行）
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 # ============================================================
 
-
-# 天氣代碼說明（WMO Weather Code）
 WEATHER_DESCRIPTIONS = {
-    0:  "晴天",
-    1:  "大致晴朗",
-    2:  "部分多雲",
-    3:  "陰天",
-    45: "霧",
-    48: "霧淞",
-    51: "毛毛雨（小）",
-    53: "毛毛雨（中）",
-    55: "毛毛雨（大）",
-    61: "小雨",
-    63: "中雨",
-    65: "大雨",
-    71: "小雪",
-    73: "中雪",
-    75: "大雪",
-    80: "陣雨（小）",
-    81: "陣雨（中）",
-    82: "陣雨（大）",
-    85: "陣雪",
-    86: "大陣雪",
-    95: "雷陣雨",
-    96: "雷陣雨伴冰雹",
-    99: "強烈雷陣雨伴冰雹",
+    0:  "晴天", 1: "大致晴朗", 2: "部分多雲", 3: "陰天",
+    45: "霧", 48: "霧淞",
+    51: "毛毛雨（小）", 53: "毛毛雨（中）", 55: "毛毛雨（大）",
+    61: "小雨", 63: "中雨", 65: "大雨",
+    71: "小雪", 73: "中雪", 75: "大雪",
+    80: "陣雨（小）", 81: "陣雨（中）", 82: "陣雨（大）",
+    85: "陣雪", 86: "大陣雪",
+    95: "雷陣雨", 96: "雷陣雨伴冰雹", 99: "強烈雷陣雨伴冰雹",
 }
 
-# 小雨以上才算需要撐傘（排除毛毛雨 51/53/55）
 UMBRELLA_WEATHER_CODES = {61, 63, 65, 71, 73, 75, 80, 81, 82, 85, 86, 95, 96, 99}
 SEVERE_WEATHER_CODES   = {82, 86, 95, 96, 99}
 
 
 def fetch_weather():
-    """取得昨天每日資料（溫差比較）和今天逐小時資料（判斷是否會下雨）"""
     today     = date.today()
     yesterday = today - timedelta(days=1)
 
-    # 每日資料：昨天和今天的最高/最低溫、天氣代碼
     daily_url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={LATITUDE}&longitude={LONGITUDE}"
@@ -68,7 +45,6 @@ def fetch_weather():
         f"&timezone=Asia%2FTaipei"
         f"&start_date={yesterday}&end_date={today}"
     )
-
     with urllib.request.urlopen(daily_url, timeout=10) as resp:
         daily_data = json.loads(resp.read())
 
@@ -81,7 +57,6 @@ def fetch_weather():
             "weather_code": daily["weathercode"][i],
         }
 
-    # 逐小時資料：今天每小時的天氣代碼
     hourly_url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={LATITUDE}&longitude={LONGITUDE}"
@@ -89,7 +64,6 @@ def fetch_weather():
         f"&timezone=Asia%2FTaipei"
         f"&start_date={today}&end_date={today}"
     )
-
     with urllib.request.urlopen(hourly_url, timeout=10) as resp:
         hourly_data = json.loads(resp.read())
 
@@ -99,10 +73,7 @@ def fetch_weather():
 
 
 def build_message(yesterday, today, today_hourly_codes):
-    """根據天氣資料判斷是否需要提醒，並組成訊息"""
-    alerts   = []
-    tips     = []
-    warnings = []
+    alerts, tips, warnings = [], [], []
 
     y_max, y_min = yesterday["max_temp"], yesterday["min_temp"]
     t_max, t_min = today["max_temp"],     today["min_temp"]
@@ -112,9 +83,7 @@ def build_message(yesterday, today, today_hourly_codes):
     y_desc = WEATHER_DESCRIPTIONS.get(y_code, f"代碼 {y_code}")
     t_desc = WEATHER_DESCRIPTIONS.get(t_code, f"代碼 {t_code}")
 
-    # --- 溫度判斷 ---
-    min_diff = y_min - t_min   # 正值 = 今天更冷
-
+    min_diff = y_min - t_min
     if min_diff >= TEMP_DIFF_THRESHOLD:
         alerts.append(f"🥶 早晨最低溫比昨天低 {min_diff:.0f}°C（{y_min:.0f}°C → {t_min:.0f}°C）")
         tips.append("多穿一件外套或加件毛衣")
@@ -129,7 +98,6 @@ def build_message(yesterday, today, today_hourly_codes):
         warnings.append(f"☀️ 今天最高溫達 {t_max:.0f}°C，高溫注意防曬補水！")
         tips.append("多喝水，避免長時間在戶外曝曬")
 
-    # --- 降雨判斷（逐小時，今天任何時段有小雨以上就提醒）---
     today_rain_codes   = [c for c in today_hourly_codes if c in UMBRELLA_WEATHER_CODES]
     today_severe_codes = [c for c in today_hourly_codes if c in SEVERE_WEATHER_CODES]
 
@@ -143,19 +111,16 @@ def build_message(yesterday, today, today_hourly_codes):
         tips.append("記得帶傘！")
 
     if not alerts and not warnings:
-        return None  # 天氣正常，不發通知
+        return None
 
-    # --- 組成訊息 ---
     lines = [f"## 🌤 {LOCATION_NAME}天氣提醒"]
     lines.append(f"昨天：{y_min:.0f}–{y_max:.0f}°C　{y_desc}")
     lines.append(f"今天：{t_min:.0f}–{t_max:.0f}°C　{t_desc}")
     lines.append("")
-
     for w in warnings:
         lines.append(w)
     for a in alerts:
         lines.append(a)
-
     if tips:
         lines.append("\n📋 **建議：**")
         for t in tips:
@@ -165,22 +130,34 @@ def build_message(yesterday, today, today_hourly_codes):
 
 
 def send_discord(message):
-    """透過 Discord Webhook 發送訊息"""
     if not DISCORD_WEBHOOK_URL:
-        print("⚠️  找不到 DISCORD_WEBHOOK_URL，請確認 GitHub Secrets 設定正確")
+        print("⚠️  找不到 DISCORD_WEBHOOK_URL")
         return False
 
-    payload = json.dumps({"content": message}).encode("utf-8")
+    # 印出 URL 前段，確認有讀到正確的值
+    print(f"🔗 使用 Webhook URL: {DISCORD_WEBHOOK_URL[:50]}...")
+
+    payload = json.dumps({"content": message}, ensure_ascii=False).encode("utf-8")
 
     req = urllib.request.Request(
         DISCORD_WEBHOOK_URL,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "weather-alert-bot/1.0",
+        },
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return resp.status == 204
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            print(f"✅ Discord 回應狀態碼：{status}")
+            return status in (200, 204)
+    except urllib.error.HTTPError as e:
+        print(f"❌ HTTP 錯誤：{e.code} {e.reason}")
+        print(f"❌ 回應內容：{e.read().decode('utf-8', errors='ignore')}")
+        return False
 
 
 def main():
@@ -200,10 +177,8 @@ def main():
     print(message)
 
     success = send_discord(message)
-    if success:
-        print("✅ Discord 通知發送成功！")
-    else:
-        print("❌ 發送失敗，請確認 Webhook URL 是否正確。")
+    if not success:
+        raise Exception("Discord 發送失敗，請查看上方錯誤訊息")
 
 
 if __name__ == "__main__":
